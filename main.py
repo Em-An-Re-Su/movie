@@ -1,825 +1,716 @@
 
-# main.py
-# KOBIS 일별 박스오피스 + 영화 장면 애니메이션
-# 초보자를 위해 기능별로 주석을 달았습니다.
+import io
+import os
+import tempfile
+from datetime import date, timedelta
 
-from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
-from html import escape
-import hashlib
-
-import requests
+import imageio.v2 as imageio
+import numpy as np
 import pandas as pd
-import plotly.express as px
+import requests
 import streamlit as st
+import plotly.express as px
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 
-
-# =========================================================
-# 1. 기본 설정
-# =========================================================
-
+# --------------------------------------------------
+# 기본 설정
+# --------------------------------------------------
 st.set_page_config(
-    page_title="CINÉ | DAILY BOX OFFICE",
+    page_title="CINEMA LAB",
     page_icon="🎬",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-SEOUL = ZoneInfo("Asia/Seoul")
-TODAY = datetime.now(SEOUL).date()
-YESTERDAY = TODAY - timedelta(days=1)
-
-API_URL = (
+TMDB_BASE = "https://api.themoviedb.org/3"
+TMDB_IMAGE = "https://image.tmdb.org/t/p/"
+KOBIS_URL = (
     "https://www.kobis.or.kr/kobisopenapi/webservice/rest/"
     "boxoffice/searchDailyBoxOfficeList.json"
 )
 
-# 실제 캐릭터 이미지가 있다면 영화 제목과 이미지 URL을 등록하세요.
-# 이미지 URL은 공개적으로 접근 가능한 이미지 파일이어야 합니다.
-# KOBIS API 자체는 포스터나 캐릭터 이미지를 제공하지 않습니다.
-MOVIE_SCENES = {
-    # 예시:
-    # "영화 제목": {
-    #     "images": [
-    #         "https://example.com/character1.png",
-    #         "https://example.com/character2.png",
-    #     ],
-    #     "emojis": ["🦸", "🦹"],
-    #     "caption": "영화 장면 설명",
-    # },
+try:
+    TMDB_KEY = st.secrets.get("TMDB_API_KEY", "")
+    KOBIS_KEY = st.secrets.get("KOBIS_KEY", "")
+except Exception:
+    TMDB_KEY = os.getenv("TMDB_API_KEY", "")
+    KOBIS_KEY = os.getenv("KOBIS_KEY", "")
+
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Playfair+Display:wght@500;600;700&display=swap');
+
+.stApp {
+    background:
+      radial-gradient(ellipse at 15% 0%, #202c40 0%, transparent 38%),
+      linear-gradient(140deg, #080b12 0%, #101522 55%, #090b10 100%);
+    color: #f3f3f3;
 }
+.block-container {max-width: 1400px; padding-top: 2rem;}
+h1, h2, h3 {font-family: 'Playfair Display', Georgia, serif;}
+p, label, div, span {font-family: 'DM Sans', sans-serif;}
+.hero {
+    padding: 32px 0 25px;
+    border-bottom: 1px solid #343a49;
+    margin-bottom: 25px;
+}
+.eyebrow {
+    color: #c6a86b;
+    letter-spacing: .22em;
+    font-size: 12px;
+    font-weight: 700;
+}
+.hero-title {font-size: clamp(38px, 6vw, 72px); line-height: 1.0; margin: 10px 0;}
+.subtle {color: #9da7b8;}
+.metric-card {
+    background: linear-gradient(135deg, #1c2432, #111722);
+    border: 1px solid #30394a;
+    border-radius: 15px;
+    padding: 18px;
+    min-height: 105px;
+}
+.metric-label {font-size: 12px; color: #a6b0c0;}
+.metric-value {font-size: 25px; font-weight: 700; margin-top: 9px;}
+.section-label {
+    color: #c6a86b; letter-spacing: .15em;
+    font-size: 12px; font-weight: 700;
+}
+div[data-testid="stDataFrame"] {border: 1px solid #30394a; border-radius: 12px;}
+.stButton > button {
+    border-radius: 10px; border: 1px solid #bda16c;
+    background: #c6a86b; color: #10131a; font-weight: 700;
+}
+.stButton > button:hover {background: #e0c78e; color: #10131a;}
+</style>
+""", unsafe_allow_html=True)
 
 
-# =========================================================
-# 2. 화면 디자인 및 애니메이션 CSS
-# =========================================================
-
-st.markdown(
-    """
-    <style>
-    @import url(
-      'https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500'
-      '&family=Space+Grotesk:wght@400;500;600;700&display=swap'
-    );
-
-    :root {
-        --ink: #191919;
-        --paper: #f3f0e8;
-        --red: #ef493c;
-        --blue: #315ee8;
-        --yellow: #f4c94b;
-    }
-
-    .stApp {
-        background:
-            radial-gradient(circle at 90% 5%,
-                rgba(244,201,75,.22), transparent 22rem),
-            radial-gradient(circle at 5% 35%,
-                rgba(49,94,232,.10), transparent 25rem),
-            var(--paper);
-        color: var(--ink);
-        font-family: 'Space Grotesk', sans-serif;
-    }
-
-    [data-testid="stSidebar"] {
-        background: #e8e2d6;
-        border-right: 1px solid #c9c3b8;
-    }
-
-    .block-container {
-        max-width: 1450px;
-        padding-top: 2rem;
-        padding-bottom: 4rem;
-    }
-
-    .eyebrow {
-        font-family: 'DM Mono', monospace;
-        font-size: .72rem;
-        letter-spacing: .14em;
-        text-transform: uppercase;
-    }
-
-    .hero {
-        position: relative;
-        overflow: hidden;
-        background: #faf7ef;
-        border: 2px solid var(--ink);
-        box-shadow: 7px 7px 0 var(--ink);
-        padding: clamp(1.5rem, 4vw, 3.5rem);
-        margin-bottom: 2rem;
-    }
-
-    .hero h1 {
-        font-size: clamp(2.5rem, 6vw, 5.5rem);
-        letter-spacing: -.075em;
-        line-height: .92;
-        margin: 1rem 0;
-    }
-
-    .hero-shape {
-        position: absolute;
-        right: 8%;
-        top: 15%;
-        width: 100px;
-        height: 100px;
-        background: var(--red);
-        border: 2px solid var(--ink);
-        border-radius: 50%;
-        animation: floatShape 5s ease-in-out infinite;
-    }
-
-    .hero-shape::after {
-        content: '';
-        position: absolute;
-        width: 65px;
-        height: 65px;
-        left: -35px;
-        top: 55px;
-        background: var(--yellow);
-        border: 2px solid var(--ink);
-        transform: rotate(25deg);
-    }
-
-    .section-title {
-        font-size: 1.25rem;
-        font-weight: 700;
-        letter-spacing: -.04em;
-        border-bottom: 2px solid var(--ink);
-        padding-bottom: .6rem;
-        margin: 1.8rem 0 1rem;
-    }
-
-    .metric-card {
-        border: 2px solid var(--ink);
-        padding: 1.2rem;
-        min-height: 135px;
-        box-shadow: 5px 5px 0 var(--ink);
-        animation: appear .45s ease both;
-        transition: transform .2s ease;
-    }
-
-    .metric-card:hover {
-        transform: translateY(-4px);
-    }
-
-    .metric-label {
-        font-family: 'DM Mono', monospace;
-        font-size: .72rem;
-        letter-spacing: .08em;
-    }
-
-    .metric-value {
-        font-size: clamp(1.8rem, 3vw, 2.8rem);
-        font-weight: 700;
-        letter-spacing: -.06em;
-        margin-top: .7rem;
-        overflow-wrap: anywhere;
-    }
-
-    /* 영화 장면 재생 영역 */
-    .cinema {
-        position: relative;
-        overflow: hidden;
-        min-height: 330px;
-        padding: 1.5rem;
-        border: 2px solid #171717;
-        box-shadow: 7px 7px 0 #171717;
-        isolation: isolate;
-    }
-
-    .cinema::before {
-        content: '';
-        position: absolute;
-        inset: 0;
-        z-index: -2;
-        background:
-            radial-gradient(circle at 50% 110%,
-                var(--accent), transparent 45%),
-            linear-gradient(135deg, var(--bg), var(--fg));
-    }
-
-    /* 영화관의 빛과 화면 질감 */
-    .cinema::after {
-        content: '';
-        position: absolute;
-        inset: 0;
-        z-index: -1;
-        pointer-events: none;
-        background: repeating-linear-gradient(
-            0deg,
-            transparent 0px,
-            transparent 3px,
-            rgba(0,0,0,.045) 4px
-        );
-    }
-
-    .cinema-header {
-        display: flex;
-        justify-content: space-between;
-        gap: 1rem;
-        font-family: 'DM Mono', monospace;
-        font-size: .72rem;
-        letter-spacing: .1em;
-    }
-
-    .scene-title {
-        font-size: clamp(2rem, 5vw, 4rem);
-        font-weight: 700;
-        line-height: 1;
-        letter-spacing: -.07em;
-        margin-top: 1.3rem;
-        overflow-wrap: anywhere;
-        max-width: 95%;
-    }
-
-    .scene-stage {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: clamp(1rem, 5vw, 4rem);
-        height: 150px;
-        overflow: hidden;
-    }
-
-    .character {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: clamp(72px, 12vw, 120px);
-        height: clamp(72px, 12vw, 120px);
-        font-size: clamp(3rem, 8vw, 6rem);
-        filter: drop-shadow(4px 6px 0 rgba(0,0,0,.18));
-        animation: characterMove 3.2s ease-in-out infinite;
-        will-change: transform;
-    }
-
-    .character:nth-child(2) {
-        animation-delay: -.8s;
-    }
-
-    .character:nth-child(3) {
-        animation-delay: -1.6s;
-    }
-
-    .character img {
-        width: 100%;
-        height: 100%;
-        object-fit: contain;
-        filter: drop-shadow(4px 6px 0 rgba(0,0,0,.18));
-    }
-
-    .paused .character,
-    .paused .scene-shape,
-    .paused .film-light {
-        animation-play-state: paused !important;
-    }
-
-    .scene-shape {
-        position: absolute;
-        z-index: -1;
-        width: 90px;
-        height: 90px;
-        right: 8%;
-        bottom: 14%;
-        border: 2px solid var(--fg);
-        background: var(--accent);
-        transform: rotate(25deg);
-        animation: rotateShape 9s linear infinite;
-        opacity: .8;
-    }
-
-    .film-light {
-        position: absolute;
-        width: 200px;
-        height: 450px;
-        top: -70px;
-        left: -230px;
-        background: rgba(255,255,255,.18);
-        transform: rotate(25deg);
-        animation: lightSweep 6s ease-in-out infinite;
-        pointer-events: none;
-    }
-
-    .scene-caption {
-        font-family: 'DM Mono', monospace;
-        font-size: .75rem;
-        margin-top: .7rem;
-    }
-
-    @keyframes characterMove {
-        0%, 100% { transform: translateY(8px) rotate(-5deg) scale(.96); }
-        25% { transform: translateY(-16px) rotate(3deg) scale(1.03); }
-        50% { transform: translateY(0) rotate(6deg) scale(1); }
-        75% { transform: translateY(-8px) rotate(-2deg) scale(1.02); }
-    }
-
-    @keyframes rotateShape {
-        from { transform: rotate(0deg) translateY(0); }
-        50% { transform: rotate(180deg) translateY(-18px); }
-        to { transform: rotate(360deg) translateY(0); }
-    }
-
-    @keyframes lightSweep {
-        0% { left: -230px; }
-        70%, 100% { left: 120%; }
-    }
-
-    @keyframes floatShape {
-        0%, 100% { transform: translateY(0) rotate(0deg); }
-        50% { transform: translateY(20px) rotate(20deg); }
-    }
-
-    @keyframes appear {
-        from { opacity: 0; transform: translateY(12px); }
-        to { opacity: 1; transform: translateY(0); }
-    }
-
-    div.stButton > button {
-        border: 2px solid var(--ink);
-        border-radius: 2px;
-        font-weight: 700;
-        transition: transform .15s ease, box-shadow .15s ease;
-    }
-
-    div.stButton > button:hover {
-        transform: translate(-2px, -2px);
-        box-shadow: 4px 4px 0 var(--ink);
-    }
-
-    @media (max-width: 650px) {
-        .hero-shape { opacity: .25; right: -10px; }
-        .cinema { padding: 1rem; min-height: 300px; }
-        .scene-stage { gap: .6rem; }
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-        *, *::before, *::after {
-            animation: none !important;
-            transition: none !important;
-        }
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+# --------------------------------------------------
+# API / 데이터 함수
+# --------------------------------------------------
+def tmdb_get(endpoint, params=None):
+    if not TMDB_KEY:
+        raise RuntimeError(
+            "TMDB_API_KEY가 설정되지 않았습니다. "
+            "Streamlit Cloud의 Settings → Secrets에서 등록하세요."
+        )
+    p = dict(params or {})
+    p["api_key"] = TMDB_KEY
+    p.setdefault("language", "ko-KR")
+    r = requests.get(
+        f"{TMDB_BASE}/{endpoint.lstrip('/')}",
+        params=p,
+        timeout=25,
+    )
+    r.raise_for_status()
+    data = r.json()
+    if isinstance(data, dict) and data.get("success") is False:
+        raise RuntimeError(data.get("status_message", "TMDB API 오류"))
+    return data
 
 
-# =========================================================
-# 3. 공통 함수
-# =========================================================
-
-def number_text(value):
-    """숫자에 천 단위 쉼표를 붙입니다."""
+def get_image(url, timeout=25):
+    if not url:
+        return None
     try:
-        return f"{int(float(value)):,}"
-    except (TypeError, ValueError):
-        return "0"
-
-
-def date_text(value):
-    """개봉일을 보기 좋은 날짜로 바꿉니다."""
-    try:
-        return datetime.strptime(
-            str(value), "%Y-%m-%d"
-        ).strftime("%Y.%m.%d")
-    except (TypeError, ValueError):
-        return "정보 없음"
-
-
-def palette(movie_name):
-    """영화 제목마다 일정한 추상 색상 테마를 선택합니다."""
-    themes = [
-        ("#ef493c", "#faf5e9", "#f4c94b"),
-        ("#315ee8", "#f6f0e5", "#ef493c"),
-        ("#f4c94b", "#202020", "#ef493c"),
-        ("#d9d5f2", "#202020", "#ef493c"),
-        ("#1f6c5c", "#f7f0df", "#e9b7a6"),
-        ("#e9b7a6", "#242424", "#f4c94b"),
-    ]
-    code = hashlib.sha256(
-        str(movie_name).encode("utf-8")
-    ).hexdigest()
-    return themes[int(code[:8], 16) % len(themes)]
-
-
-def get_api_key():
-    """인증키는 코드에 쓰지 않고 Streamlit Secrets에서 읽습니다."""
-    try:
-        key = st.secrets.get("KOBIS_KEY", "")
+        r = requests.get(
+            url,
+            timeout=timeout,
+            headers={"User-Agent": "CinemaLab/1.0"},
+        )
+        r.raise_for_status()
+        im = Image.open(io.BytesIO(r.content)).convert("RGB")
+        return im
     except Exception:
-        key = ""
+        return None
 
-    if not key:
+
+def tmdb_image(path, size="w780"):
+    if not path:
+        return None
+    return f"{TMDB_IMAGE}{size}{path}"
+
+
+def search_movies(query):
+    data = tmdb_get(
+        "search/movie",
+        {"query": query, "include_adult": "false", "page": 1},
+    )
+    return data.get("results", [])
+
+
+def get_movie_cast(movie_id):
+    data = tmdb_get(f"movie/{movie_id}/credits")
+    cast = []
+    for person in data.get("cast", []):
+        if person.get("profile_path"):
+            cast.append({
+                "name": person.get("name", "Unknown"),
+                "character": person.get("character", ""),
+                "profile": tmdb_image(person["profile_path"], "w500"),
+            })
+        if len(cast) >= 8:
+            break
+    return cast
+
+
+def get_font(size, bold=False):
+    candidates = []
+    if bold:
+        candidates += [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
+            "C:/Windows/Fonts/malgunbd.ttf",
+        ]
+    candidates += [
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "C:/Windows/Fonts/malgun.ttf",
+    ]
+    for path in candidates:
+        try:
+            if os.path.exists(path):
+                return ImageFont.truetype(path, size)
+        except Exception:
+            pass
+    return ImageFont.load_default()
+
+
+def cover_crop(image, width, height, zoom=1.0, focus_x=0.5, focus_y=0.5):
+    """이미지를 화면 비율에 맞춰 자르고 줌/패닝을 적용한다."""
+    if image is None:
+        return Image.new("RGB", (width, height), (15, 19, 29))
+
+    image = image.convert("RGB")
+    iw, ih = image.size
+    scale = max(width / iw, height / ih) * zoom
+    nw, nh = max(width, int(iw * scale)), max(height, int(ih * scale))
+    image = image.resize((nw, nh), Image.Resampling.LANCZOS)
+
+    max_x = max(0, nw - width)
+    max_y = max(0, nh - height)
+    left = int(max_x * min(1, max(0, focus_x)))
+    top = int(max_y * min(1, max(0, focus_y)))
+    return image.crop((left, top, left + width, top + height))
+
+
+def rounded_portrait(image, size, radius=18):
+    image = image.convert("RGB").resize(size, Image.Resampling.LANCZOS)
+    mask = Image.new("L", size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, size[0] - 1, size[1] - 1),
+        radius=radius,
+        fill=255,
+    )
+    out = Image.new("RGBA", size, (0, 0, 0, 0))
+    out.paste(image.convert("RGBA"), (0, 0), mask)
+    return out
+
+
+def generate_movie_video(movie, cast, duration=10, fps=18):
+    """
+    TMDB 배경 이미지와 출연진 프로필 이미지를 조합해 MP4를 생성한다.
+    배경 줌, 패닝, 인물 카드 이동, 빛/그레인 효과, 타이틀 연출을 사용한다.
+    """
+    width, height = 960, 540
+    total_frames = duration * fps
+
+    backdrop = get_image(tmdb_image(movie.get("backdrop_path"), "w1280"))
+    if backdrop is None:
+        backdrop = get_image(tmdb_image(movie.get("poster_path"), "w780"))
+
+    if backdrop is None:
         raise RuntimeError(
-            "KOBIS_KEY를 찾을 수 없습니다. "
-            "Streamlit Cloud의 Settings → Secrets에 "
-            'KOBIS_KEY = "발급받은_인증키"를 등록하세요.'
+            "이 영화의 배경/포스터 이미지를 불러오지 못했습니다. "
+            "다른 영화로 다시 시도해 주세요."
         )
-    return key
 
+    # 출연진 이미지 내려받기
+    portraits = []
+    for actor in cast[:5]:
+        im = get_image(actor.get("profile"))
+        if im is not None:
+            portraits.append((actor, im))
 
-@st.cache_data(ttl=900, show_spinner=False)
-def load_box_office(target_date):
-    """선택 날짜의 박스오피스를 API에서 가져옵니다."""
-    params = {
-        "key": get_api_key(),
-        "targetDt": target_date.strftime("%Y%m%d"),
-    }
+    if not portraits:
+        raise RuntimeError(
+            "출연진 프로필 이미지를 불러오지 못했습니다. "
+            "TMDB에서 이미지가 제공되는 영화인지 확인해 주세요."
+        )
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    output_path = tmp.name
+    tmp.close()
+
+    title = movie.get("title") or movie.get("original_title") or "Untitled"
+    original_title = movie.get("original_title") or ""
+    year = (movie.get("release_date") or "")[:4]
+
+    title_font = get_font(38, bold=True)
+    small_font = get_font(18)
+    name_font = get_font(17, bold=True)
+    role_font = get_font(13)
+
+    # 초당 fps 프레임으로 MP4 영상 인코딩
+    with imageio.get_writer(
+        output_path,
+        fps=fps,
+        codec="libx264",
+        quality=7,
+        macro_block_size=16,
+        pixelformat="yuv420p",
+    ) as writer:
+        for frame_no in range(total_frames):
+            t = frame_no / max(1, total_frames - 1)
+            phase = frame_no / fps
+
+            # 카메라가 배경을 천천히 확대하며 좌우로 이동
+            zoom = 1.02 + 0.15 * t
+            focus_x = 0.25 + 0.5 * (0.5 + 0.5 * np.sin(phase * 0.32))
+            focus_y = 0.35 + 0.2 * (0.5 + 0.5 * np.sin(phase * 0.22))
+            frame = cover_crop(
+                backdrop, width, height, zoom, focus_x, focus_y
+            ).convert("RGBA")
+
+            # 어두운 색조와 하단 그라데이션을 합성
+            shade = Image.new("RGBA", (width, height), (5, 9, 18, 95))
+            frame = Image.alpha_composite(frame, shade)
+            overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+            od = ImageDraw.Draw(overlay)
+            for y in range(height // 2, height):
+                alpha = int(5 + 130 * ((y - height / 2) / (height / 2)))
+                od.line((0, y, width, y), fill=(3, 5, 10, alpha))
+            frame = Image.alpha_composite(frame, overlay)
+
+            draw = ImageDraw.Draw(frame)
+
+            # 위쪽 작은 영화 정보
+            draw.text(
+                (38, 28), "C I N E M A   L A B",
+                font=small_font, fill=(231, 204, 146, 255)
+            )
+            if year:
+                draw.text(
+                    (width - 90, 30), year,
+                    font=small_font, fill=(240, 240, 240, 220)
+                )
+
+            # 제목을 영상 중간부터 천천히 나타내기
+            title_alpha = int(255 * min(1, max(0, t * 4)))
+            title_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+            td = ImageDraw.Draw(title_layer)
+            td.text(
+                (40, 365), title,
+                font=title_font, fill=(255, 255, 255, title_alpha),
+                stroke_width=1, stroke_fill=(0, 0, 0, title_alpha),
+            )
+            if original_title and original_title != title:
+                td.text(
+                    (43, 415), original_title[:70],
+                    font=small_font, fill=(225, 225, 225, title_alpha),
+                )
+            frame = Image.alpha_composite(frame, title_layer)
+
+            # 출연진 이미지를 화면 좌우로 순차적으로 이동시킨다.
+            card_w, card_h = 150, 205
+            visible_start = 0.13
+            visible_end = 0.80
+            if visible_start <= t <= visible_end:
+                local_t = (t - visible_start) / (visible_end - visible_start)
+                max_cards = min(4, len(portraits))
+                for idx in range(max_cards):
+                    actor, portrait = portraits[idx]
+                    # 카드가 시간차를 두고 등장
+                    stagger = idx * 0.13
+                    progress = min(1.0, max(0.0, (local_t - stagger) * 2.5))
+                    if progress <= 0:
+                        continue
+
+                    x_target = 38 + idx * (card_w + 20)
+                    x = int(x_target + (1 - progress) * (idx % 2 * 70 - 35))
+                    y = 85 + int(10 * np.sin(phase * 1.2 + idx))
+                    card = rounded_portrait(portrait, (card_w, card_h))
+
+                    # 부드러운 그림자
+                    shadow = Image.new("RGBA", (card_w + 20, card_h + 20), (0, 0, 0, 0))
+                    sd = ImageDraw.Draw(shadow)
+                    sd.rounded_rectangle(
+                        (8, 8, card_w + 10, card_h + 10),
+                        radius=20, fill=(0, 0, 0, 150)
+                    )
+                    shadow = shadow.filter(ImageFilter.GaussianBlur(8))
+                    frame.alpha_composite(shadow, (x - 10, y - 6))
+                    frame.alpha_composite(card, (x, y))
+
+                    draw = ImageDraw.Draw(frame)
+                    label_y = y + card_h + 8
+                    name = actor.get("name", "")[:22]
+                    role = actor.get("character", "")[:22]
+                    draw.text(
+                        (x + 2, label_y), name,
+                        font=name_font, fill=(255, 255, 255, 245)
+                    )
+                    if role:
+                        draw.text(
+                            (x + 2, label_y + 25), role,
+                            font=role_font, fill=(220, 215, 205, 230)
+                        )
+
+            # 움직이는 빛줄기
+            light = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+            ld = ImageDraw.Draw(light)
+            sweep_x = int((phase * 115) % (width + 300)) - 150
+            ld.polygon(
+                [
+                    (sweep_x, 0),
+                    (sweep_x + 32, 0),
+                    (sweep_x - 80, height),
+                    (sweep_x - 112, height),
+                ],
+                fill=(255, 232, 190, 17),
+            )
+            frame = Image.alpha_composite(frame, light)
+
+            # 얇은 프레임과 영화 필름 느낌의 상/하단 바
+            draw = ImageDraw.Draw(frame)
+            draw.rectangle((15, 15, width - 16, height - 16),
+                           outline=(255, 255, 255, 45), width=1)
+            draw.rectangle((0, 0, width, 12), fill=(0, 0, 0, 180))
+            draw.rectangle((0, height - 12, width, height),
+                           fill=(0, 0, 0, 180))
+
+            # 미세한 필름 그레인
+            rgb = np.array(frame.convert("RGB"), dtype=np.int16)
+            rng = np.random.default_rng(frame_no)
+            noise = rng.normal(0, 2.0, (height, width, 1))
+            rgb = np.clip(rgb + noise, 0, 255).astype(np.uint8)
+            writer.append_data(rgb)
+
+    with open(output_path, "rb") as f:
+        video_bytes = f.read()
 
     try:
-        response = requests.get(
-            API_URL, params=params, timeout=20
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except requests.Timeout as exc:
-        raise RuntimeError(
-            "KOBIS 응답 시간이 초과되었습니다. 잠시 후 다시 시도하세요."
-        ) from exc
-    except requests.RequestException as exc:
-        raise RuntimeError(
-            "KOBIS 서버에 연결하지 못했습니다. "
-            "네트워크와 API 서비스 상태를 확인하세요."
-        ) from exc
-    except ValueError as exc:
-        raise RuntimeError(
-            "API 응답을 JSON으로 읽지 못했습니다."
-        ) from exc
+        os.remove(output_path)
+    except OSError:
+        pass
 
-    # 인증키 오류는 HTTP 200이어도 faultInfo로 올 수 있습니다.
-    if payload.get("faultInfo"):
-        info = payload["faultInfo"]
-        raise RuntimeError(
-            f"KOBIS API 오류: {info.get('message', '알 수 없는 오류')}. "
-            "인증키와 API 이용 권한을 확인하세요."
-        )
-
-    result = payload.get("boxOfficeResult")
-    if not isinstance(result, dict):
-        raise RuntimeError(
-            "boxOfficeResult가 없습니다. 인증키와 API 응답을 확인하세요."
-        )
-
-    return result.get("dailyBoxOfficeList", [])
+    return video_bytes
 
 
-def rank_arrow(value):
-    """양수는 순위 상승, 음수는 순위 하락입니다."""
-    value = int(value)
-    if value > 0:
-        return f"🔺 +{value}"
-    if value < 0:
-        return f"🔽 {value}"
-    return "— 0"
+# --------------------------------------------------
+# 헤더
+# --------------------------------------------------
+st.markdown("""
+<div class="hero">
+  <div class="eyebrow">FILM DISCOVERY · DAILY BOX OFFICE · MOTION DESIGN</div>
+  <div class="hero-title">CINEMA LAB</div>
+  <div class="subtle">
+    영화 데이터를 살펴보고, 실제 영화 이미지로 나만의 시네마틱 영상을 만든다.
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
 
-def scene_html(movie_name, rank, opened, playing):
-    """영화 장면 영역을 HTML로 만듭니다."""
-    bg, fg, accent = palette(movie_name)
-    scene = MOVIE_SCENES.get(movie_name, {})
+# --------------------------------------------------
+# 사이드바
+# --------------------------------------------------
+with st.sidebar:
+    st.markdown("## 🎬 Cinema Lab")
+    st.caption("영화 탐색 및 영상 합성")
+    page = st.radio(
+        "메뉴",
+        ["오늘의 박스오피스", "영화 이미지로 영상 만들기"],
+    )
+    st.divider()
+    st.caption("영화 이미지 및 정보 출처: TMDB")
+    st.caption("비상업적 이용 시에도 TMDB의 출처 표시 조건을 확인하세요.")
 
-    # 등록한 캐릭터 이미지가 있으면 이미지를 표시합니다.
-    image_urls = scene.get("images", [])
-    emojis = scene.get("emojis", ["🦸", "🌟", "🎭"])
-    emojis = (emojis + ["✨", "🎬", "⭐"])[:3]
 
-    characters = []
-    for i in range(min(3, max(len(image_urls), len(emojis)))):
-        if i < len(image_urls):
-            # 이미지 URL은 설정자가 직접 등록한 주소입니다.
-            url = escape(str(image_urls[i]), quote=True)
-            characters.append(
-                f'<div class="character">'
-                f'<img src="{url}" alt="영화 캐릭터"></div>'
+# --------------------------------------------------
+# 페이지 1: KOBIS 박스오피스
+# --------------------------------------------------
+if page == "오늘의 박스오피스":
+    st.markdown("## Daily Box Office")
+    st.write("한국 영화관 일일 박스오피스 데이터를 확인한다.")
+
+    latest_date = date.today() - timedelta(days=1)
+    selected_date = st.date_input(
+        "조회 날짜",
+        value=latest_date,
+        min_value=date(2004, 1, 1),
+        max_value=latest_date,
+    )
+
+    if st.button("박스오피스 조회", use_container_width=True):
+        if not KOBIS_KEY:
+            st.error(
+                "KOBIS_KEY가 없습니다. Streamlit Secrets에 "
+                "KOBIS_KEY를 등록해 주세요."
             )
         else:
-            characters.append(
-                f'<div class="character">{escape(str(emojis[i]))}</div>'
-            )
+            try:
+                response = requests.get(
+                    KOBIS_URL,
+                    params={
+                        "key": KOBIS_KEY,
+                        "targetDt": selected_date.strftime("%Y%m%d"),
+                        "itemPerPage": 10,
+                    },
+                    timeout=20,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                fault = payload.get("faultInfo")
+                if fault:
+                    st.error(
+                        f"KOBIS API 오류: {fault.get('message', '요청 실패')}"
+                    )
+                else:
+                    rows = payload.get("boxOfficeResult", {}).get(
+                        "dailyBoxOfficeList", []
+                    )
+                    if not rows:
+                        st.info("그날은 아직 집계 전이거나 조회 결과가 없습니다.")
+                    else:
+                        df = pd.DataFrame(rows)
+                        for col in [
+                            "audiCnt", "audiAcc", "scrnCnt",
+                            "rank", "rankInten",
+                        ]:
+                            if col in df:
+                                df[col] = pd.to_numeric(
+                                    df[col], errors="coerce"
+                                ).fillna(0)
 
-    motion_class = "" if playing else "paused"
-    title = escape(str(movie_name))
-    caption = escape(
-        str(scene.get("caption", "A MOMENT FROM THE MOVIE"))
+                        leader = df.iloc[0]
+                        c1, c2, c3 = st.columns(3)
+                        with c1:
+                            st.markdown(
+                                f"""<div class="metric-card">
+                                <div class="metric-label">오늘의 1위</div>
+                                <div class="metric-value">{leader['movieNm']}</div>
+                                </div>""",
+                                unsafe_allow_html=True,
+                            )
+                        with c2:
+                            st.markdown(
+                                f"""<div class="metric-card">
+                                <div class="metric-label">당일 관객 수</div>
+                                <div class="metric-value">
+                                {int(leader['audiCnt']):,}명</div></div>""",
+                                unsafe_allow_html=True,
+                            )
+                        with c3:
+                            st.markdown(
+                                f"""<div class="metric-card">
+                                <div class="metric-label">누적 관객 수</div>
+                                <div class="metric-value">
+                                {int(leader['audiAcc']):,}명</div></div>""",
+                                unsafe_allow_html=True,
+                            )
+
+                        st.markdown("### 관객 수 TOP 10")
+                        chart_df = df[["movieNm", "audiCnt"]].copy()
+                        chart_df = chart_df.sort_values("audiCnt")
+                        fig = px.bar(
+                            chart_df,
+                            x="audiCnt",
+                            y="movieNm",
+                            orientation="h",
+                            labels={
+                                "audiCnt": "당일 관객 수",
+                                "movieNm": "영화",
+                            },
+                            text="audiCnt",
+                        )
+                        fig.update_traces(
+                            marker_color="#c6a86b",
+                            texttemplate="%{text:,.0f}",
+                            textposition="outside",
+                            cliponaxis=False,
+                        )
+                        fig.update_layout(
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            plot_bgcolor="rgba(0,0,0,0)",
+                            font_color="#eeeeee",
+                            margin=dict(l=10, r=70, t=15, b=10),
+                            xaxis=dict(showgrid=True, gridcolor="#30394a"),
+                            yaxis=dict(showgrid=False),
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+
+                        st.markdown("### 전체 순위")
+                        view = pd.DataFrame({
+                            "순위": df["rank"].astype(int),
+                            "전일 대비": df["rankInten"].apply(
+                                lambda x: "NEW" if x == 0 and False
+                                else (f"▲ {int(x)}" if x > 0
+                                      else (f"▼ {abs(int(x))}" if x < 0
+                                            else "—"))
+                            ),
+                            "영화 제목": df["movieNm"],
+                            "당일 관객 수": df["audiCnt"].map(
+                                lambda x: f"{int(x):,}"
+                            ),
+                            "누적 관객 수": df["audiAcc"].map(
+                                lambda x: f"{int(x):,}"
+                            ),
+                            "상영관 수": df["scrnCnt"].astype(int),
+                        })
+                        st.dataframe(
+                            view, hide_index=True, use_container_width=True
+                        )
+            except requests.RequestException as e:
+                st.error(f"박스오피스 API 연결에 실패했습니다: {e}")
+            except Exception as e:
+                st.error(f"데이터 처리 중 오류가 발생했습니다: {e}")
+
+
+# --------------------------------------------------
+# 페이지 2: 영화 이미지 기반 영상 생성
+# --------------------------------------------------
+else:
+    st.markdown("## Make a Motion Scene")
+    st.write(
+        "영화 제목으로 검색한 뒤, 영화의 배경과 등장인물 이미지로 "
+        "짧은 MP4 장면을 합성한다."
     )
-    status = "▶ PLAYING" if playing else "Ⅱ PAUSED"
 
-    return f"""
-    <div class="cinema {motion_class}"
-         style="--bg:{bg};--fg:{fg};--accent:{accent};color:{fg};">
-      <div class="film-light"></div>
-      <div class="scene-shape"></div>
-      <div class="cinema-header">
-        <span>CINÉ / SCENE PREVIEW</span>
-        <span>{status}</span>
-      </div>
-      <div class="scene-title">{title}</div>
-      <div class="scene-stage">
-        {''.join(characters)}
-      </div>
-      <div class="scene-caption">
-        RANK {int(rank):02d} &nbsp; · &nbsp; RELEASE {escape(str(opened))}
-        <br>{caption}
-      </div>
-    </div>
-    """
-
-
-# =========================================================
-# 4. 페이지 헤더
-# =========================================================
-
-st.markdown(
-    f"""
-    <div class="hero">
-      <div class="hero-shape"></div>
-      <div class="eyebrow">
-        KOBIS DATA / DAILY REPORT · 최대 조회 가능일 {YESTERDAY:%Y.%m.%d}
-      </div>
-      <h1>THE DAILY<br>BOX OFFICE.</h1>
-      <p>영화의 기록을 읽고, 움직이는 장면으로 감상하는 박스오피스 아카이브.</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-# =========================================================
-# 5. 날짜 선택 및 API 호출
-# =========================================================
-
-with st.sidebar:
-    st.markdown("### 01 / 날짜 선택")
-
-    selected_date = st.date_input(
-        "조회할 날짜",
-        value=YESTERDAY,
-        min_value=date(2004, 1, 1),
-        max_value=YESTERDAY,
-        help="한국 시간 기준 어제까지 선택할 수 있습니다.",
-    )
-
-    st.caption(f"한국 시간 오늘: {TODAY:%Y.%m.%d}")
-
-    if st.button("↻ 데이터 새로고침", use_container_width=True):
-        load_box_office.clear()
-        st.rerun()
-
-    st.markdown("---")
-    st.markdown("### 02 / 장면 설정")
-    playing = st.toggle("애니메이션 재생", value=True)
-    st.caption("재생을 끄면 캐릭터와 도형의 움직임이 멈춥니다.")
-
-if selected_date > YESTERDAY:
-    st.error("오늘 이후 날짜는 조회할 수 없습니다.")
-    st.stop()
-
-st.markdown(
-    f'<div class="eyebrow">DAILY REPORT / {selected_date:%Y.%m.%d}</div>',
-    unsafe_allow_html=True,
-)
-
-try:
-    with st.spinner("박스오피스 데이터를 불러오는 중입니다..."):
-        movies = load_box_office(selected_date)
-except Exception as error:
-    st.error("박스오피스 데이터를 불러오지 못했습니다.")
-    st.markdown(
-        """
-        **다음 사항을 확인해 주세요.**
-        - Streamlit Cloud의 Settings → Secrets에 `KOBIS_KEY`가 등록되어 있는지
-        - 인증키가 정확하고 KOBIS API 이용 권한이 유효한지
-        - 네트워크와 KOBIS API 서비스가 정상인지
-        """
-    )
-    st.code(str(error))
-    st.stop()
-
-if not movies:
-    st.warning(
-        f"**{selected_date:%Y년 %m월 %d일}: 그날은 아직 집계 전입니다.**\n\n"
-        "영화 목록이 비어 있습니다. 다른 날짜를 선택하거나 "
-        "KOBIS의 해당 날짜 집계 여부를 확인해 주세요."
-    )
-    st.stop()
-
-
-# =========================================================
-# 6. 데이터 정리
-# =========================================================
-
-df = pd.DataFrame(movies)
-
-required = [
-    "rank", "rankInten", "movieNm", "openDt",
-    "audiCnt", "audiAcc", "scrnCnt",
-]
-for col in required:
-    if col not in df.columns:
-        df[col] = ""
-
-for col in ["rank", "rankInten", "audiCnt", "audiAcc", "scrnCnt"]:
-    df[col] = pd.to_numeric(
-        df[col], errors="coerce"
-    ).fillna(0).astype(int)
-
-df["movieNm"] = df["movieNm"].fillna("제목 정보 없음").astype(str)
-df["openDt"] = df["openDt"].fillna("").astype(str)
-df = df.sort_values("rank").reset_index(drop=True)
-
-
-# =========================================================
-# 7. 1위 영화 카드
-# =========================================================
-
-leader = df.iloc[0]
-leader_name = leader["movieNm"]
-bg, fg, accent = palette(leader_name)
-
-st.markdown(
-    '<div class="section-title">DAY’S LEADER / 1위 영화</div>',
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    f"""
-    <div class="metric-card" style="background:{bg};color:{fg};">
-      <div class="metric-label">RANK NO. 01</div>
-      <div class="metric-value">{escape(leader_name)}</div>
-      <div>개봉일 {date_text(leader['openDt'])}</div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-a, b, c = st.columns(3)
-cards = [
-    (a, "DAILY AUDIENCE", leader["audiCnt"], "#ef493c", "#191919"),
-    (b, "TOTAL AUDIENCE", leader["audiAcc"], "#f4c94b", "#191919"),
-    (c, "SCREENS", leader["scrnCnt"], "#315ee8", "#ffffff"),
-]
-
-for col, label, value, color, text_color in cards:
-    with col:
-        st.markdown(
-            f"""
-            <div class="metric-card"
-                 style="background:{color};color:{text_color};">
-              <div class="metric-label">{label}</div>
-              <div class="metric-value">{number_text(value)}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+    if not TMDB_KEY:
+        st.warning(
+            "TMDB_API_KEY가 설정되지 않았습니다. "
+            "Settings → Secrets에 TMDB_API_KEY를 추가해 주세요."
         )
 
-
-# =========================================================
-# 8. 관객수 TOP 5 그래프
-# =========================================================
-
-st.markdown(
-    '<div class="section-title">AUDIENCE RACE / 관객수 TOP 5</div>',
-    unsafe_allow_html=True,
-)
-
-top5 = df.nlargest(5, "audiCnt").copy()
-top5["영화명"] = top5.apply(
-    lambda r: ("🏆 " if r["audiAcc"] > 1_000_000 else "")
-    + r["movieNm"],
-    axis=1,
-)
-
-fig = px.bar(
-    top5.sort_values("audiCnt"),
-    x="audiCnt",
-    y="영화명",
-    orientation="h",
-    text="audiCnt",
-    color="audiCnt",
-    color_continuous_scale=["#315ee8", "#ef493c", "#f4c94b"],
-    labels={"audiCnt": "일일 관객수", "영화명": ""},
-)
-
-fig.update_traces(
-    texttemplate="%{text:,.0f}명",
-    textposition="outside",
-    cliponaxis=False,
-)
-fig.update_layout(
-    height=350,
-    margin=dict(l=8, r=45, t=10, b=10),
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(0,0,0,0)",
-    font=dict(color="#191919"),
-    showlegend=False,
-    coloraxis_showscale=False,
-)
-
-st.plotly_chart(
-    fig, use_container_width=True,
-    config={"displayModeBar": False},
-)
-
-
-# =========================================================
-# 9. 전체 순위표
-# =========================================================
-
-st.markdown(
-    '<div class="section-title">FULL RANKING / 전체 순위</div>',
-    unsafe_allow_html=True,
-)
-
-st.caption(
-    "🔺 빨간 위쪽 기호: 순위 상승 · "
-    "🔽 파란 아래쪽 기호: 순위 하락 · "
-    "🏆 누적 관객 100만 명 초과"
-)
-
-table = df.copy()
-table["순위"] = table["rank"].map(lambda x: f"{x}위")
-table["전일 대비"] = table["rankInten"].map(rank_arrow)
-table["영화명"] = table.apply(
-    lambda r: ("🏆 " if r["audiAcc"] > 1_000_000 else "")
-    + r["movieNm"],
-    axis=1,
-)
-table["개봉일"] = table["openDt"].map(date_text)
-table["관객수"] = table["audiCnt"].map(number_text)
-table["누적관객"] = table["audiAcc"].map(number_text)
-table["스크린 수"] = table["scrnCnt"].map(number_text)
-
-st.dataframe(
-    table[
-        [
-            "순위", "전일 대비", "영화명", "개봉일",
-            "관객수", "누적관객", "스크린 수",
-        ]
-    ],
-    use_container_width=True,
-    hide_index=True,
-)
-
-
-# =========================================================
-# 10. 영화 선택 및 장면 애니메이션
-# =========================================================
-
-st.markdown(
-    '<div class="section-title">SCENE PREVIEW / 영화 장면 감상</div>',
-    unsafe_allow_html=True,
-)
-
-movie_names = df["movieNm"].tolist()
-selected_movie = st.selectbox(
-    "장면을 감상할 영화를 선택하세요.",
-    movie_names,
-    key="selected_movie",
-)
-
-chosen = df.loc[df["movieNm"] == selected_movie].iloc[0]
-
-# 선택한 영화의 장면을 다시 렌더링합니다.
-st.markdown(
-    scene_html(
-        movie_name=selected_movie,
-        rank=chosen["rank"],
-        opened=date_text(chosen["openDt"]),
-        playing=playing,
-    ),
-    unsafe_allow_html=True,
-)
-
-if selected_movie not in MOVIE_SCENES:
-    st.info(
-        "현재 영화에는 실제 캐릭터 이미지가 등록되어 있지 않아 "
-        "추상적인 캐릭터 애니메이션을 표시하고 있습니다. "
-        "실제 이미지를 사용하려면 코드 위쪽의 MOVIE_SCENES에 "
-        "이미지 주소를 추가하세요."
+    query = st.text_input(
+        "영화 제목",
+        value="인터스텔라",
+        placeholder="예: 인터스텔라, 기생충, Dune",
     )
 
-left, right = st.columns(2)
-with left:
-    st.metric("일일 관객수", f"{number_text(chosen['audiCnt'])}명")
-    st.metric("누적 관객수", f"{number_text(chosen['audiAcc'])}명")
-with right:
-    st.metric("박스오피스 순위", f"{chosen['rank']}위")
-    st.metric("스크린 수", f"{number_text(chosen['scrnCnt'])}개")
+    if st.button("영화 검색", use_container_width=True):
+        if not TMDB_KEY:
+            st.error("먼저 TMDB_API_KEY를 등록해 주세요.")
+        elif not query.strip():
+            st.warning("영화 제목을 입력해 주세요.")
+        else:
+            try:
+                with st.spinner("영화 정보를 검색하고 있습니다..."):
+                    results = search_movies(query.strip())
+                st.session_state["movie_results"] = results
+                st.session_state.pop("generated_video", None)
+                if not results:
+                    st.info("검색 결과가 없습니다. 다른 제목으로 시도해 주세요.")
+            except Exception as e:
+                st.error(f"영화 검색에 실패했습니다: {e}")
 
-if chosen["rankInten"] > 0:
-    st.markdown(f"전일 대비 🔺 **{chosen['rankInten']}계단 상승**")
-elif chosen["rankInten"] < 0:
-    st.markdown(f"전일 대비 🔽 **{abs(chosen['rankInten'])}계단 하락**")
-else:
-    st.markdown("전일 대비 순위 변동 없음")
+    results = st.session_state.get("movie_results", [])
+    selected_movie = None
 
+    if results:
+        def movie_label(m):
+            year = (m.get("release_date") or "")[:4]
+            title = m.get("title") or m.get("original_title") or "제목 없음"
+            original = m.get("original_title") or ""
+            extra = f" / {original}" if original and original != title else ""
+            return f"{title}{extra} ({year or '개봉 연도 미상'})"
 
-# =========================================================
-# 11. 데이터 출처
-# =========================================================
+        selected_index = st.selectbox(
+            "영상으로 만들 영화 선택",
+            options=list(range(len(results))),
+            format_func=lambda i: movie_label(results[i]),
+        )
+        selected_movie = results[selected_index]
 
-st.markdown("---")
-st.caption(
-    "DATA SOURCE: KOBIS OPEN API. "
-    "영화별 실제 포스터와 캐릭터 이미지는 별도 이미지 URL을 등록해야 합니다. "
-    "애니메이션은 HTML/CSS 기반이며 실제 영화 영상을 재생하는 기능은 아닙니다."
-)
+        left, right = st.columns([1, 2])
+        with left:
+            poster_url = tmdb_image(selected_movie.get("poster_path"), "w500")
+            if poster_url:
+                st.image(poster_url, use_container_width=True)
+            else:
+                st.info("포스터 이미지가 없습니다.")
+        with right:
+            st.markdown(f"### {selected_movie.get('title', '영화 제목')}")
+            st.caption(selected_movie.get("original_title", ""))
+            st.write(selected_movie.get("overview") or "등록된 줄거리가 없습니다.")
+            st.write(
+                f"개봉일: {selected_movie.get('release_date') or '정보 없음'}"
+            )
+            st.write(
+                f"평점: {selected_movie.get('vote_average', 0)} / 10"
+            )
+
+        st.markdown("---")
+        st.markdown("### 영상 연출 설정")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            duration = st.slider("영상 길이(초)", 6, 15, 10)
+        with col_b:
+            fps = st.select_slider(
+                "영상 부드러움",
+                options=[12, 15, 18, 24],
+                value=18,
+                format_func=lambda x: f"{x} FPS",
+            )
+
+        st.caption(
+            "영상은 배경 줌/패닝, 출연진 이미지의 순차적 등장, "
+            "타이틀과 빛 효과를 합성해 생성합니다."
+        )
+
+        if st.button("🎞️ MP4 영상 생성", use_container_width=True):
+            try:
+                with st.spinner(
+                    "출연진 이미지를 내려받고 프레임을 합성하고 있습니다. "
+                    "설정에 따라 잠시 걸릴 수 있습니다..."
+                ):
+                    cast = get_movie_cast(selected_movie["id"])
+                    if not cast:
+                        raise RuntimeError(
+                            "출연진 프로필 이미지를 찾지 못했습니다."
+                        )
+                    video = generate_movie_video(
+                        selected_movie, cast,
+                        duration=duration, fps=fps,
+                    )
+                    st.session_state["generated_video"] = video
+                    st.session_state["generated_title"] = (
+                        selected_movie.get("title", "cinema_scene")
+                    )
+                    st.session_state["generated_cast"] = cast
+            except Exception as e:
+                st.error(f"영상 생성에 실패했습니다: {e}")
+
+        video = st.session_state.get("generated_video")
+        if video:
+            st.markdown("### 생성된 시네마틱 영상")
+            st.video(video, format="video/mp4")
+            safe_title = "".join(
+                c if c.isalnum() or c in "-_ " else "_"
+                for c in st.session_state.get(
+                    "generated_title", "cinema_scene"
+                )
+            ).strip().replace(" ", "_")
+            st.download_button(
+                "⬇️ MP4 영상 다운로드",
+                data=video,
+                file_name=f"{safe_title or 'cinema_scene'}.mp4",
+                mime="video/mp4",
+                use_container_width=True,
+            )
+
+            st.markdown("### 영상에 사용된 출연진 이미지")
+            cast = st.session_state.get("generated_cast", [])
+            cols = st.columns(min(4, max(1, len(cast))))
+            for idx, person in enumerate(cast[:4]):
+                with cols[idx % len(cols)]:
+                    st.image(person["profile"], use_container_width=True)
+                    st.caption(
+                        f"**{person['name']}**\n\n"
+                        f"{person.get('character') or ''}"
+                    )
+
+            st.caption(
+                "영화 정보 및 이미지 출처: TMDB. "
+                "TMDB API 사용 시 요구되는 출처 표시 및 이용 조건을 준수하세요."
+            )
