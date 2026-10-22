@@ -310,7 +310,8 @@ def generate_movie_video(movie, cast, duration=10, fps=18):
                     font=small_font, fill=(225, 225, 225, title_alpha),
                 )
             frame = Image.alpha_composite(frame, title_layer)
-
+            draw = ImageDraw.Draw(frame)
+            
             # 출연진 이미지를 화면 좌우로 순차적으로 이동시킨다.
             card_w, card_h = 150, 205
             visible_start = 0.13
